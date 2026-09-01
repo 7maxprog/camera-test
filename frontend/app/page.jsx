@@ -1,273 +1,121 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
-import { io } from "socket.io-client";
+import { useState, useEffect, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import {
+  Camera,
+  Link as LinkIcon,
+  Shield,
+  ArrowRight,
+  Sparkles,
+  LayoutDashboard,
+} from "lucide-react";
+import Link from "next/link";
+import MobileCameraRoomPage from "./c/[id]/page";
 
-const ICE_SERVERS = [
-  {
-    urls: [
-      "stun:stun.l.google.com:19302",
-      "stun:stun1.l.google.com:19302",
-    ],
-  },
-];
+function MainCameraComponent() {
+  const searchParams = useSearchParams();
+  const sessionId = searchParams.get("session") || searchParams.get("id");
+  const router = useRouter();
+  const [inputRoomId, setInputRoomId] = useState("");
 
-const STATUS_LABELS = {
-  disconnected: "Disconnected",
-  waiting: "Waiting for admin",
-  connecting: "Connecting",
-  connected: "Connected",
-  stopped: "Camera stopped",
-};
+  if (sessionId) {
+    return <MobileCameraRoomPage params={Promise.resolve({ id: sessionId })} />;
+  }
 
-const STATUS_COLORS = {
-  disconnected: "bg-zinc-500",
-  waiting: "bg-amber-500",
-  connecting: "bg-blue-500",
-  connected: "bg-emerald-500",
-  stopped: "bg-zinc-500",
-};
-
-export default function MobileCameraPage() {
-  const [status, setStatus] = useState("disconnected");
-  const [error, setError] = useState(null);
-
-  const localVideoRef = useRef(null);
-  const streamRef = useRef(null);
-  const socketRef = useRef(null);
-  const peerConnectionRef = useRef(null);
-  const iceQueueRef = useRef([]);
-
-  const cleanupPeer = useCallback(() => {
-    if (peerConnectionRef.current) {
-      peerConnectionRef.current.close();
-      peerConnectionRef.current = null;
+  const handleJoin = (e) => {
+    e.preventDefault();
+    const clean = inputRoomId.trim();
+    if (clean) {
+      router.push(`/c/${encodeURIComponent(clean)}`);
     }
-    iceQueueRef.current = [];
-  }, []);
+  };
 
-  const cleanupAll = useCallback(() => {
-    cleanupPeer();
-
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-    }
-
-    if (socketRef.current) {
-      socketRef.current.disconnect();
-      socketRef.current = null;
-    }
-
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = null;
-    }
-  }, [cleanupPeer]);
-
-  const startStreaming = useCallback(
-    async (socket) => {
-      const stream = streamRef.current;
-      if (!stream) return;
-
-      try {
-        cleanupPeer();
-
-        const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-        peerConnectionRef.current = pc;
-
-        stream.getTracks().forEach((track) => {
-          pc.addTrack(track, stream);
-        });
-
-        pc.onicecandidate = (event) => {
-          if (event.candidate) {
-            socket.emit("camera:ice-candidate", event.candidate);
-          }
-        };
-
-        pc.oniceconnectionstatechange = () => {
-          const state = pc.iceConnectionState;
-          if (state === "connected" || state === "completed") {
-            setStatus("connected");
-          } else if (state === "disconnected" || state === "failed") {
-            setStatus("waiting");
-            cleanupPeer();
-          }
-        };
-
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        socket.emit("camera:offer", offer);
-        setStatus("connecting");
-      } catch {
-        setError("Failed to create offer");
-        setStatus("waiting");
-      }
-    },
-    [cleanupPeer]
-  );
-
-  const startCamera = useCallback(async () => {
-    setError(null);
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: false,
-      });
-
-      streamRef.current = stream;
-
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-        localVideoRef.current.play().catch(() => {});
-      }
-
-      const signalingUrl =
-        process.env.NEXT_PUBLIC_SIGNALING_URL || "http://localhost:4000";
-
-      const socket = io(signalingUrl, {
-        transports: ["websocket", "polling"],
-      });
-      socketRef.current = socket;
-
-      socket.on("connect", () => {
-        socket.emit("camera:join", "mobile");
-        setStatus("waiting");
-        startStreaming(socket);
-      });
-
-      socket.on("camera:answer", async (answer) => {
-        try {
-          const pc = peerConnectionRef.current;
-          if (pc) {
-            await pc.setRemoteDescription(new RTCSessionDescription(answer));
-            while (iceQueueRef.current.length > 0) {
-              const candidate = iceQueueRef.current.shift();
-              await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
-            }
-          }
-        } catch {
-          setError("Failed to process answer");
-        }
-      });
-
-      socket.on("camera:ice-candidate", async (candidate) => {
-        try {
-          const pc = peerConnectionRef.current;
-          if (pc && pc.remoteDescription && pc.remoteDescription.type) {
-            await pc.addIceCandidate(new RTCIceCandidate(candidate));
-          } else {
-            iceQueueRef.current.push(candidate);
-          }
-        } catch {
-          setError("Failed to add ICE candidate");
-        }
-      });
-
-      socket.on("camera:peer-joined", (role) => {
-        if (role === "admin") {
-          startStreaming(socket);
-        }
-      });
-
-      socket.on("camera:peer-disconnected", (role) => {
-        if (role === "admin") {
-          setStatus("waiting");
-          cleanupPeer();
-        }
-      });
-
-      socket.on("connect_error", () => {
-        setError("Cannot connect to signaling server");
-        setStatus("disconnected");
-      });
-    } catch (err) {
-      if (err.name === "NotAllowedError") {
-        setError("Camera permission denied");
-      } else if (err.name === "NotFoundError") {
-        setError("No camera device found");
-      } else {
-        setError("Failed to access camera");
-      }
-      setStatus("disconnected");
-    }
-  }, [cleanupPeer, startStreaming]);
-
-  const stopCamera = useCallback(() => {
-    if (socketRef.current) {
-      socketRef.current.emit("camera:disconnect");
-    }
-    cleanupAll();
-    setStatus("stopped");
-    setError(null);
-  }, [cleanupAll]);
-
-  useEffect(() => {
-    const handleBeforeUnload = () => {
-      if (socketRef.current) {
-        socketRef.current.emit("camera:disconnect");
-      }
-      cleanupAll();
-    };
-
-    window.addEventListener("beforeunload", handleBeforeUnload);
-
-    return () => {
-      window.removeEventListener("beforeunload", handleBeforeUnload);
-      cleanupAll();
-    };
-  }, [cleanupAll]);
-
-  const isCameraActive =
-    status === "waiting" ||
-    status === "connecting" ||
-    status === "connected";
+  const handleCreateNewSession = () => {
+    const randomId = "cam-" + Math.random().toString(36).substring(2, 8);
+    router.push(`/c/${randomId}`);
+  };
 
   return (
-    <main className="flex flex-1 flex-col items-center justify-center px-4 py-8">
+    <main className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col justify-center items-center p-4">
       <div className="w-full max-w-md space-y-6">
-        <div className="space-y-2">
-          <h1 className="text-2xl font-semibold tracking-tight">Camera</h1>
-          <div className="flex items-center gap-2">
-            <span
-              className={`inline-block h-2.5 w-2.5 rounded-full ${STATUS_COLORS[status] || STATUS_COLORS.disconnected}`}
-            />
-            <span className="text-sm text-zinc-400">
-              {STATUS_LABELS[status] || STATUS_LABELS.disconnected}
+        {/* Brand Header */}
+        <div className="text-center space-y-2">
+          <div className="inline-flex h-14 w-14 rounded-2xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-violet-500 items-center justify-center shadow-xl shadow-indigo-500/20 mb-2">
+            <Camera className="h-7 w-7 text-white" />
+          </div>
+          <h1 className="text-2xl font-bold tracking-tight">Live Camera Stream</h1>
+          <p className="text-sm text-zinc-400">
+            Real-time, peer-to-peer WebRTC camera streaming.
+          </p>
+        </div>
+
+        {/* Join by ID Card */}
+        <div className="rounded-2xl border border-zinc-800 bg-zinc-900/70 backdrop-blur-xl p-5 space-y-4 shadow-xl">
+          <form onSubmit={handleJoin} className="space-y-3">
+            <label className="block text-xs font-medium text-zinc-400">
+              Have a Camera Link or Session ID?
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={inputRoomId}
+                onChange={(e) => setInputRoomId(e.target.value)}
+                placeholder="e.g. cam-a1b2c3"
+                className="flex-1 rounded-xl bg-zinc-950 border border-zinc-800 px-3.5 py-2.5 text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-indigo-500 transition-colors font-mono"
+              />
+              <button
+                type="submit"
+                disabled={!inputRoomId.trim()}
+                className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 cursor-pointer"
+              >
+                Join
+                <ArrowRight className="h-4 w-4" />
+              </button>
+            </div>
+          </form>
+
+          <div className="relative flex items-center justify-center">
+            <div className="border-t border-zinc-800 w-full" />
+            <span className="bg-zinc-900 px-3 text-[11px] font-medium uppercase tracking-wider text-zinc-500 shrink-0">
+              or
             </span>
           </div>
+
+          <button
+            onClick={handleCreateNewSession}
+            className="w-full py-3 px-4 rounded-xl bg-zinc-800/80 hover:bg-zinc-800 border border-zinc-700/60 text-zinc-200 text-sm font-medium transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98]"
+          >
+            <Sparkles className="h-4 w-4 text-indigo-400" />
+            Start Instant Camera Session
+          </button>
         </div>
 
-        <div className="aspect-video w-full overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900">
-          <video
-            ref={localVideoRef}
-            autoPlay
-            playsInline
-            muted
-            className="h-full w-full object-cover"
-          />
-        </div>
-
-        {error && <p className="text-sm text-red-400">{error}</p>}
-
-        <div className="flex gap-3">
-          <button
-            onClick={startCamera}
-            disabled={isCameraActive}
-            className="flex-1 rounded-lg bg-white px-4 py-2.5 text-sm font-medium text-zinc-900 transition-opacity hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+        {/* Admin Navigation link */}
+        <div className="flex justify-center">
+          <Link
+            href="/admin"
+            className="inline-flex items-center gap-2 text-xs text-zinc-400 hover:text-zinc-200 transition-colors py-2 px-3 rounded-lg hover:bg-zinc-900"
           >
-            Start Camera
-          </button>
-          <button
-            onClick={stopCamera}
-            disabled={!isCameraActive}
-            className="flex-1 rounded-lg border border-zinc-800 px-4 py-2.5 text-sm font-medium text-zinc-300 transition-opacity hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-          >
-            Stop Camera
-          </button>
+            <LayoutDashboard className="h-4 w-4 text-zinc-500" />
+            Open Admin Monitor Panel
+          </Link>
         </div>
       </div>
     </main>
+  );
+}
+
+export default function MobileCameraPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-zinc-950 flex items-center justify-center text-zinc-500 text-sm">
+          Loading camera...
+        </div>
+      }
+    >
+      <MainCameraComponent />
+    </Suspense>
   );
 }
