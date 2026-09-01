@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback, use } from "react";
 import { io } from "socket.io-client";
+import { Video, VideoOff, Camera, AlertCircle } from "lucide-react";
 
 const ICE_SERVERS = [
   {
@@ -186,18 +187,19 @@ export default function MobileCameraRoomPage({ params }) {
 
       let stream;
       try {
+        // Request Front Camera (user-facing)
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
-            facingMode: { ideal: "environment" },
+            facingMode: { ideal: "user" },
             width: { ideal: 1280 },
             height: { ideal: 720 },
           },
           audio: false,
         });
       } catch {
-        // Fallback simple video constraint
+        // Fallback constraint
         stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
+          video: { facingMode: "user" },
           audio: false,
         });
       }
@@ -219,11 +221,11 @@ export default function MobileCameraRoomPage({ params }) {
     } catch (err) {
       console.error("Camera access error:", err);
       if (err.name === "NotAllowedError") {
-        setError("Camera permission denied. Please allow camera in settings.");
+        setError("Camera permission denied. Please allow camera access in browser.");
       } else if (err.name === "NotFoundError") {
-        setError("No camera device found.");
+        setError("No front camera found on this device.");
       } else {
-        setError("Could not access camera.");
+        setError("Could not open front camera.");
       }
       setIsActive(false);
     }
@@ -239,42 +241,55 @@ export default function MobileCameraRoomPage({ params }) {
   };
 
   return (
-    <main className="min-h-screen bg-black text-white flex flex-col p-4 max-w-lg mx-auto justify-between">
-      {/* Video Preview */}
-      <div className="relative aspect-[9/16] sm:aspect-video w-full rounded-2xl overflow-hidden bg-zinc-950 border border-zinc-800 shadow-2xl flex items-center justify-center my-auto">
+    <main className="h-[100dvh] w-full bg-black text-white flex flex-col p-4 sm:p-6 max-w-lg mx-auto select-none overflow-hidden">
+      {/* Video Preview Container - fully responsive flex-1 */}
+      <div className="flex-1 w-full relative rounded-3xl overflow-hidden bg-zinc-950 border border-zinc-800 shadow-2xl flex items-center justify-center min-h-0">
         <video
           ref={localVideoRef}
           autoPlay
           playsInline
           muted
-          className={`w-full h-full object-cover ${isActive ? "block" : "hidden"}`}
+          className={`w-full h-full object-cover scale-x-[-1] ${isActive ? "block" : "hidden"}`}
         />
 
         {!isActive && (
-          <p className="text-zinc-500 text-sm font-medium">Camera preview</p>
+          <div className="text-center p-6 space-y-2">
+            <div className="h-14 w-14 mx-auto rounded-2xl bg-zinc-900 border border-zinc-800/80 flex items-center justify-center text-zinc-600">
+              <Camera className="h-7 w-7" />
+            </div>
+            <p className="text-zinc-500 text-sm font-medium">
+              Camera preview
+            </p>
+          </div>
         )}
       </div>
 
+      {/* Error Notice if any */}
       {error && (
-        <p className="text-red-400 text-xs text-center my-2">{error}</p>
+        <div className="mt-3 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs flex items-center gap-2">
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          <span className="truncate">{error}</span>
+        </div>
       )}
 
-      {/* Start / Stop Buttons */}
-      <div className="flex gap-3 pt-4">
+      {/* Action Buttons Bar */}
+      <div className="flex gap-3 pt-4 shrink-0">
         <button
           onClick={startCamera}
           disabled={isActive}
-          className="flex-1 py-4 px-4 rounded-xl bg-white text-black font-semibold text-base transition-opacity disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+          className="flex-1 py-4 px-4 rounded-2xl bg-white hover:bg-zinc-200 active:scale-[0.98] text-black font-semibold text-base transition-all flex items-center justify-center gap-2.5 disabled:opacity-30 disabled:cursor-not-allowed shadow-lg cursor-pointer"
         >
-          Start
+          <Video className="h-5 w-5" />
+          <span>Start</span>
         </button>
 
         <button
           onClick={stopCamera}
           disabled={!isActive}
-          className="flex-1 py-4 px-4 rounded-xl bg-zinc-900 border border-zinc-800 text-white font-semibold text-base transition-opacity disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+          className="flex-1 py-4 px-4 rounded-2xl bg-zinc-900 hover:bg-zinc-800 active:scale-[0.98] border border-zinc-800 text-white font-semibold text-base transition-all flex items-center justify-center gap-2.5 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
         >
-          Stop
+          <VideoOff className="h-5 w-5 text-zinc-400" />
+          <span>Stop</span>
         </button>
       </div>
     </main>
