@@ -343,26 +343,21 @@ function CameraFeedCard({
         </div>
       )}
 
-      {/* Card Action Bar / Link Section */}
-      <div className="p-3 bg-zinc-950/60 border-t border-zinc-800/80 space-y-2">
+      {/* Card Action Bar */}
+      <div className="p-3 bg-zinc-950/60 border-t border-zinc-800/80">
         <div className="flex items-center gap-2">
-          <div className="flex-1 min-w-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-xs text-zinc-400 font-mono">
-            <LinkIcon className="h-3.5 w-3.5 text-zinc-500 shrink-0" />
-            <span className="truncate">{shareUrl}</span>
-          </div>
-
           <button
             onClick={copyLink}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer shrink-0 ${
+            className={`flex-1 py-2 px-3 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
               copied
-                ? "bg-emerald-600 text-white"
+                ? "bg-emerald-600 text-white shadow-sm shadow-emerald-600/30"
                 : "bg-white hover:bg-zinc-200 text-zinc-900"
             }`}
           >
             {copied ? (
               <>
                 <Check className="h-3.5 w-3.5" />
-                Copied
+                Copied!
               </>
             ) : (
               <>
@@ -525,23 +520,18 @@ export default function AdminDashboardPage() {
       {/* Top Navigation Bar */}
       <header className="sticky top-0 z-30 border-b border-zinc-800/80 bg-zinc-950/80 backdrop-blur-xl px-4 sm:px-6 py-3.5">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-violet-500 flex items-center justify-center shadow-lg shadow-indigo-500/20">
-              <Camera className="h-5 w-5 text-white" />
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-lg font-bold tracking-tight text-white">
+                Admin Monitor
+              </h1>
+              <span className="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                {sessions.length} {sessions.length === 1 ? "Feed" : "Feeds"}
+              </span>
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-lg font-bold tracking-tight text-white">
-                  Admin Monitor
-                </h1>
-                <span className="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-                  {sessions.length} {sessions.length === 1 ? "Feed" : "Feeds"}
-                </span>
-              </div>
-              <p className="text-xs text-zinc-400">
-                Multi-camera peer-to-peer live monitoring
-              </p>
-            </div>
+            <p className="text-xs text-zinc-400">
+              Multi-camera peer-to-peer live monitoring
+            </p>
           </div>
 
           <div className="flex items-center gap-2.5">
