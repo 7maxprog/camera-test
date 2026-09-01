@@ -29,31 +29,26 @@ const STATUS_CONFIG = {
     label: "Disconnected",
     color: "bg-zinc-500",
     textColor: "text-zinc-400",
-    borderColor: "border-zinc-700",
   },
   waiting: {
-    label: "Waiting for Admin",
+    label: "Ready (Camera Inactive)",
     color: "bg-amber-500 animate-pulse",
     textColor: "text-amber-400",
-    borderColor: "border-amber-500/30",
   },
   connecting: {
     label: "Connecting...",
     color: "bg-blue-500 animate-pulse",
     textColor: "text-blue-400",
-    borderColor: "border-blue-500/30",
   },
   connected: {
     label: "Live Streaming",
     color: "bg-emerald-500",
     textColor: "text-emerald-400",
-    borderColor: "border-emerald-500/30",
   },
   stopped: {
     label: "Camera Stopped",
     color: "bg-zinc-500",
     textColor: "text-zinc-400",
-    borderColor: "border-zinc-700",
   },
 };
 
@@ -61,12 +56,13 @@ export default function MobileCameraRoomPage({ params }) {
   const resolvedParams = use(params);
   const roomId = resolvedParams?.id || "default";
 
-  const [status, setStatus] = useState("disconnected");
+  const [status, setStatus] = useState("waiting");
   const [error, setError] = useState(null);
-  const [facingMode, setFacingMode] = useState("environment"); // back camera by default for mobile
+  const [facingMode, setFacingMode] = useState("environment");
   const [torchOn, setTorchOn] = useState(false);
   const [hasTorch, setHasTorch] = useState(false);
   const [isAdminOnline, setIsAdminOnline] = useState(false);
+  const [isStreamingActive, setIsStreamingActive] = useState(false);
 
   const localVideoRef = useRef(null);
   const streamRef = useRef(null);
@@ -92,16 +88,12 @@ export default function MobileCameraRoomPage({ params }) {
       streamRef.current = null;
     }
 
-    if (socketRef.current) {
-      socketRef.current.emit("camera:disconnect", { roomId });
-      socketRef.current.disconnect();
-      socketRef.current = null;
-    }
-
     if (localVideoRef.current) {
       localVideoRef.current.srcObject = null;
     }
-  }, [cleanupPeer, roomId]);
+
+    setIsStreamingActive(false);
+  }, [cleanupPeer]);
 
   const startStreaming = useCallback(
     async (socket) => {
@@ -135,7 +127,7 @@ export default function MobileCameraRoomPage({ params }) {
           } else if (state === "disconnected") {
             setStatus("connecting");
           } else if (state === "failed" || state === "closed") {
-            setStatus("waiting");
+            setStatus(isStreamingActive ? "connecting" : "waiting");
             cleanupPeer();
           }
         };
@@ -150,15 +142,119 @@ export default function MobileCameraRoomPage({ params }) {
         setStatus("waiting");
       }
     },
-    [cleanupPeer, roomId]
+    [cleanupPeer, roomId, isStreamingActive]
   );
+
+  // Connect socket on mount
+  useEffect(() => {
+    const signalingUrl =
+      process.env.NEXT_PUBLIC_SIGNALING_URL || "http://localhost:4000";
+
+    const socket = io(signalingUrl, {
+      transports: ["websocket", "polling"],
+    });
+    socketRef.current = socket;
+
+    socket.on("connect", () => {
+      socket.emit("camera:join", { role: "mobile", roomId });
+      setError(null);
+    });
+
+    socket.on("camera:peer-joined", (payload) => {
+      const role = typeof payload === "string" ? payload : payload?.role;
+      const eventRoomId = payload?.roomId;
+
+      if ((!eventRoomId || eventRoomId === roomId) && role === "admin") {
+        setIsAdminOnline(true);
+        if (streamRef.current) {
+          startStreaming(socket);
+        }
+      }
+    });
+
+    socket.on("camera:answer", async (payload) => {
+      const answer = payload?.answer || payload;
+      const eventRoomId = payload?.roomId;
+
+      if (eventRoomId && eventRoomId !== roomId) return;
+
+      try {
+        const pc = peerConnectionRef.current;
+        if (pc && pc.signalingState === "have-local-offer") {
+          await pc.setRemoteDescription(new RTCSessionDescription(answer));
+          while (iceQueueRef.current.length > 0) {
+            const candidate = iceQueueRef.current.shift();
+            if (candidate) {
+              await pc
+                .addIceCandidate(new RTCIceCandidate(candidate))
+                .catch((e) => {
+                  console.warn("Failed to add queued ICE candidate", e);
+                });
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Failed to process answer:", err);
+        setError("Failed to process answer");
+      }
+    });
+
+    socket.on("camera:ice-candidate", async (payload) => {
+      const candidate =
+        payload?.candidate !== undefined ? payload.candidate : payload;
+      const eventRoomId = payload?.roomId;
+
+      if (eventRoomId && eventRoomId !== roomId) return;
+      if (!candidate) return;
+
+      try {
+        const pc = peerConnectionRef.current;
+        if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+          await pc
+            .addIceCandidate(new RTCIceCandidate(candidate))
+            .catch((e) => {
+              console.warn("Failed to add ICE candidate", e);
+            });
+        } else {
+          iceQueueRef.current.push(candidate);
+        }
+      } catch (err) {
+        console.warn("Error handling ICE candidate:", err);
+      }
+    });
+
+    socket.on("camera:peer-disconnected", (payload) => {
+      const role = typeof payload === "string" ? payload : payload?.role;
+      const eventRoomId = payload?.roomId;
+
+      if ((!eventRoomId || eventRoomId === roomId) && role === "admin") {
+        setIsAdminOnline(false);
+        if (isStreamingActive) {
+          setStatus("waiting");
+        }
+        cleanupPeer();
+      }
+    });
+
+    socket.on("connect_error", () => {
+      setError("Cannot connect to signaling server");
+      setStatus("disconnected");
+    });
+
+    return () => {
+      if (socketRef.current) {
+        socketRef.current.emit("camera:disconnect", { roomId });
+        socketRef.current.disconnect();
+      }
+      cleanupAll();
+    };
+  }, [roomId, cleanupPeer, cleanupAll, startStreaming, isStreamingActive]);
 
   const startCamera = useCallback(
     async (targetFacing = facingMode) => {
       setError(null);
 
       try {
-        // Stop any old stream first if switching
         if (streamRef.current) {
           streamRef.current.getTracks().forEach((t) => t.stop());
         }
@@ -174,8 +270,8 @@ export default function MobileCameraRoomPage({ params }) {
 
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         streamRef.current = stream;
+        setIsStreamingActive(true);
 
-        // Check torch capability
         const videoTrack = stream.getVideoTracks()[0];
         if (videoTrack) {
           const capabilities = videoTrack.getCapabilities?.();
@@ -187,123 +283,35 @@ export default function MobileCameraRoomPage({ params }) {
           localVideoRef.current.play().catch(() => {});
         }
 
-        const signalingUrl =
-          process.env.NEXT_PUBLIC_SIGNALING_URL || "http://localhost:4000";
-
-        let socket = socketRef.current;
-        if (!socket || !socket.connected) {
-          socket = io(signalingUrl, {
-            transports: ["websocket", "polling"],
-          });
-          socketRef.current = socket;
-
-          socket.on("connect", () => {
-            socket.emit("camera:join", { role: "mobile", roomId });
-            setStatus("waiting");
-          });
-
-          socket.on("camera:peer-joined", (payload) => {
-            const role = typeof payload === "string" ? payload : payload?.role;
-            const eventRoomId = payload?.roomId;
-
-            if ((!eventRoomId || eventRoomId === roomId) && role === "admin") {
-              setIsAdminOnline(true);
-              startStreaming(socket);
-            }
-          });
-
-          socket.on("camera:answer", async (payload) => {
-            const answer = payload?.answer || payload;
-            const eventRoomId = payload?.roomId;
-
-            if (eventRoomId && eventRoomId !== roomId) return;
-
-            try {
-              const pc = peerConnectionRef.current;
-              if (pc && pc.signalingState === "have-local-offer") {
-                await pc.setRemoteDescription(new RTCSessionDescription(answer));
-                while (iceQueueRef.current.length > 0) {
-                  const candidate = iceQueueRef.current.shift();
-                  if (candidate) {
-                    await pc
-                      .addIceCandidate(new RTCIceCandidate(candidate))
-                      .catch((e) => {
-                        console.warn("Failed to add queued ICE candidate", e);
-                      });
-                  }
-                }
-              }
-            } catch (err) {
-              console.error("Failed to process answer:", err);
-              setError("Failed to process answer");
-            }
-          });
-
-          socket.on("camera:ice-candidate", async (payload) => {
-            const candidate =
-              payload?.candidate !== undefined ? payload.candidate : payload;
-            const eventRoomId = payload?.roomId;
-
-            if (eventRoomId && eventRoomId !== roomId) return;
-            if (!candidate) return;
-
-            try {
-              const pc = peerConnectionRef.current;
-              if (pc && pc.remoteDescription && pc.remoteDescription.type) {
-                await pc
-                  .addIceCandidate(new RTCIceCandidate(candidate))
-                  .catch((e) => {
-                    console.warn("Failed to add ICE candidate", e);
-                  });
-              } else {
-                iceQueueRef.current.push(candidate);
-              }
-            } catch (err) {
-              console.warn("Error handling ICE candidate:", err);
-            }
-          });
-
-          socket.on("camera:peer-disconnected", (payload) => {
-            const role = typeof payload === "string" ? payload : payload?.role;
-            const eventRoomId = payload?.roomId;
-
-            if ((!eventRoomId || eventRoomId === roomId) && role === "admin") {
-              setIsAdminOnline(false);
-              setStatus("waiting");
-              cleanupPeer();
-            }
-          });
-
-          socket.on("connect_error", () => {
-            setError("Cannot connect to signaling server");
-            setStatus("disconnected");
-          });
-        } else {
-          // If socket already connected and admin is online, restart stream
+        const socket = socketRef.current;
+        if (socket && socket.connected) {
           socket.emit("camera:join", { role: "mobile", roomId });
           if (isAdminOnline) {
             startStreaming(socket);
+          } else {
+            setStatus("waiting");
           }
         }
       } catch (err) {
         console.error("Camera access error:", err);
         if (err.name === "NotAllowedError") {
-          setError("Camera permission was denied. Please allow camera access in browser settings.");
+          setError("Camera permission denied. Please allow camera access.");
         } else if (err.name === "NotFoundError") {
-          setError("No camera device was found on this phone.");
+          setError("No camera device found.");
         } else {
           setError(`Camera error: ${err.message || "Failed to start camera"}`);
         }
         setStatus("disconnected");
+        setIsStreamingActive(false);
       }
     },
-    [facingMode, roomId, isAdminOnline, cleanupPeer, startStreaming]
+    [facingMode, roomId, isAdminOnline, startStreaming]
   );
 
   const toggleCameraFacing = async () => {
     const nextFacing = facingMode === "environment" ? "user" : "environment";
     setFacingMode(nextFacing);
-    if (isCameraActive) {
+    if (isStreamingActive) {
       await startCamera(nextFacing);
     }
   };
@@ -325,33 +333,15 @@ export default function MobileCameraRoomPage({ params }) {
   };
 
   const stopCamera = useCallback(() => {
-    if (socketRef.current) {
+    cleanupAll();
+    if (socketRef.current && socketRef.current.connected) {
       socketRef.current.emit("camera:disconnect", { roomId });
     }
-    cleanupAll();
     setStatus("stopped");
     setError(null);
   }, [cleanupAll, roomId]);
 
-  useEffect(() => {
-    const handleBeforeUnload = () => {
-      if (socketRef.current) {
-        socketRef.current.emit("camera:disconnect", { roomId });
-      }
-      cleanupAll();
-    };
-
-    window.addEventListener("beforeunload", handleBeforeUnload);
-
-    return () => {
-      window.removeEventListener("beforeunload", handleBeforeUnload);
-      cleanupAll();
-    };
-  }, [cleanupAll, roomId]);
-
-  const isCameraActive =
-    status === "waiting" || status === "connecting" || status === "connected";
-
+  const isCameraActive = isStreamingActive;
   const currentStatus = STATUS_CONFIG[status] || STATUS_CONFIG.disconnected;
 
   return (
@@ -385,7 +375,7 @@ export default function MobileCameraRoomPage({ params }) {
             {isAdminOnline ? (
               <>
                 <Wifi className="h-3.5 w-3.5 text-emerald-400" />
-                <span className="text-emerald-300 font-medium">Admin is viewing</span>
+                <span className="text-emerald-300 font-medium">Admin is connected</span>
               </>
             ) : (
               <>

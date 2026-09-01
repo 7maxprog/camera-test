@@ -24,8 +24,8 @@ const io = new Server(httpServer, {
   },
 });
 
-// socketId -> { role: "admin" | "mobile", roomId: string }
-const socketData = new Map();
+// socketId -> Map<roomId, role>
+const socketRooms = new Map();
 
 // roomId -> { admin: socketId, mobile: socketId }
 const rooms = new Map();
@@ -34,51 +34,60 @@ function getRoomId(data, socketId) {
   if (data && typeof data === "object" && data.roomId) {
     return String(data.roomId).trim();
   }
-  const existing = socketData.get(socketId);
-  return existing?.roomId || "default";
+  const userRooms = socketRooms.get(socketId);
+  if (userRooms && userRooms.size > 0) {
+    return Array.from(userRooms.keys())[0];
+  }
+  return "default";
 }
 
-function handleDisconnect(socket) {
-  const sData = socketData.get(socket.id);
-  if (!sData) return;
+function handleSocketDisconnect(socket) {
+  const userRooms = socketRooms.get(socket.id);
+  if (!userRooms) return;
 
-  const { role, roomId } = sData;
-  socketData.delete(socket.id);
-
-  const room = rooms.get(roomId);
-  if (room) {
-    if (room[role] === socket.id) {
-      delete room[role];
+  for (const [roomId, role] of userRooms) {
+    const room = rooms.get(roomId);
+    if (room) {
+      if (room[role] === socket.id) {
+        delete room[role];
+      }
+      if (!room.admin && !room.mobile) {
+        rooms.delete(roomId);
+      }
+      io.to(`room-${roomId}`).emit("camera:peer-disconnected", { role, roomId });
     }
-    if (!room.admin && !room.mobile) {
-      rooms.delete(roomId);
-    }
-    io.to(`room-${roomId}`).emit("camera:peer-disconnected", { role, roomId });
+    socket.leave(`room-${roomId}`);
   }
 
-  socket.leave(`room-${roomId}`);
+  socketRooms.delete(socket.id);
 }
 
 io.on("connection", (socket) => {
   socket.on("camera:join", (payload) => {
-    // payload can be "admin" | "mobile" or { role: "admin" | "mobile", roomId: string }
+    // payload: { role: "admin" | "mobile", roomId: string } or role string
     const role = typeof payload === "string" ? payload : payload?.role || "mobile";
     const roomId = (typeof payload === "object" && payload?.roomId ? String(payload.roomId) : "default").trim();
 
-    // Clean up if this socket was in another room
-    const existing = socketData.get(socket.id);
-    if (existing && existing.roomId !== roomId) {
-      handleDisconnect(socket);
+    // 1. Track in socketRooms
+    let userRooms = socketRooms.get(socket.id);
+    if (!userRooms) {
+      userRooms = new Map();
+      socketRooms.set(socket.id, userRooms);
     }
+    userRooms.set(roomId, role);
 
-    socketData.set(socket.id, { role, roomId });
+    // 2. Join Socket.io room channel
     socket.join(`room-${roomId}`);
 
-    const room = rooms.get(roomId) || {};
-    // If another socket claimed this role in the room, replace it
+    // 3. Track in rooms registry
+    let room = rooms.get(roomId);
+    if (!room) {
+      room = {};
+      rooms.set(roomId, room);
+    }
     room[role] = socket.id;
-    rooms.set(roomId, room);
 
+    // 4. If other peer is already in this room, notify both peers immediately
     const targetRole = role === "mobile" ? "admin" : "mobile";
     const otherSocketId = room[targetRole];
 
@@ -88,8 +97,33 @@ io.on("connection", (socket) => {
     }
   });
 
+  socket.on("camera:leave", (payload) => {
+    const roomId = (typeof payload === "object" && payload?.roomId ? String(payload.roomId) : "default").trim();
+    const userRooms = socketRooms.get(socket.id);
+    const role = userRooms?.get(roomId) || payload?.role || "admin";
+
+    if (userRooms) {
+      userRooms.delete(roomId);
+      if (userRooms.size === 0) {
+        socketRooms.delete(socket.id);
+      }
+    }
+
+    const room = rooms.get(roomId);
+    if (room) {
+      if (room[role] === socket.id) {
+        delete room[role];
+      }
+      if (!room.admin && !room.mobile) {
+        rooms.delete(roomId);
+      }
+      io.to(`room-${roomId}`).emit("camera:peer-disconnected", { role, roomId });
+    }
+
+    socket.leave(`room-${roomId}`);
+  });
+
   socket.on("camera:offer", (payload) => {
-    // payload can be offer or { roomId, offer }
     const offer = payload?.offer || payload;
     const roomId = getRoomId(payload, socket.id);
     const room = rooms.get(roomId);
@@ -100,7 +134,6 @@ io.on("connection", (socket) => {
   });
 
   socket.on("camera:answer", (payload) => {
-    // payload can be answer or { roomId, answer }
     const answer = payload?.answer || payload;
     const roomId = getRoomId(payload, socket.id);
     const room = rooms.get(roomId);
@@ -111,11 +144,11 @@ io.on("connection", (socket) => {
   });
 
   socket.on("camera:ice-candidate", (payload) => {
-    // payload can be candidate or { roomId, candidate }
     const candidate = payload?.candidate !== undefined ? payload.candidate : payload;
     const roomId = getRoomId(payload, socket.id);
-    const sData = socketData.get(socket.id);
-    const targetRole = sData?.role === "mobile" ? "admin" : "mobile";
+    const userRooms = socketRooms.get(socket.id);
+    const role = userRooms?.get(roomId) || (payload?.role ? payload.role : "mobile");
+    const targetRole = role === "mobile" ? "admin" : "mobile";
     const room = rooms.get(roomId);
 
     if (room && room[targetRole]) {
@@ -123,12 +156,32 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("camera:disconnect", () => {
-    handleDisconnect(socket);
+  socket.on("camera:disconnect", (payload) => {
+    const roomId = payload?.roomId;
+    if (roomId) {
+      const userRooms = socketRooms.get(socket.id);
+      const role = userRooms?.get(roomId) || payload?.role || "mobile";
+      if (userRooms) {
+        userRooms.delete(roomId);
+      }
+      const room = rooms.get(roomId);
+      if (room) {
+        if (room[role] === socket.id) {
+          delete room[role];
+        }
+        if (!room.admin && !room.mobile) {
+          rooms.delete(roomId);
+        }
+        io.to(`room-${roomId}`).emit("camera:peer-disconnected", { role, roomId });
+      }
+      socket.leave(`room-${roomId}`);
+    } else {
+      handleSocketDisconnect(socket);
+    }
   });
 
   socket.on("disconnect", () => {
-    handleDisconnect(socket);
+    handleSocketDisconnect(socket);
   });
 });
 

@@ -429,7 +429,12 @@ export default function AdminDashboardPage() {
     }
   }, [sessions]);
 
-  // Connect socket
+  const sessionsRef = useRef(sessions);
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
+
+  // Connect persistent admin socket once
   useEffect(() => {
     const signalingUrl =
       process.env.NEXT_PUBLIC_SIGNALING_URL || "http://localhost:4000";
@@ -439,10 +444,12 @@ export default function AdminDashboardPage() {
     });
 
     s.on("connect", () => {
-      // Re-join all active rooms
-      sessions.forEach((sess) => {
-        s.emit("camera:join", { role: "admin", roomId: sess.id });
-      });
+      // Re-join all active rooms on connect or reconnect
+      if (sessionsRef.current && sessionsRef.current.length > 0) {
+        sessionsRef.current.forEach((sess) => {
+          s.emit("camera:join", { role: "admin", roomId: sess.id });
+        });
+      }
     });
 
     setSocket(s);
@@ -450,7 +457,7 @@ export default function AdminDashboardPage() {
     return () => {
       s.disconnect();
     };
-  }, [sessions]);
+  }, []);
 
   const showToast = (msg) => {
     setToastMessage(msg);
