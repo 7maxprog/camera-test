@@ -5,7 +5,7 @@ import { Server } from "socket.io";
 import cors from "cors";
 
 const PORT = process.env.PORT || 4000;
-const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:3000";
+const CLIENT_URL = process.env.CLIENT_URL || "*";
 
 const app = express();
 app.use(cors({ origin: CLIENT_URL }));
@@ -18,7 +18,7 @@ const httpServer = createServer(app);
 
 const io = new Server(httpServer, {
   cors: {
-    origin: CLIENT_URL,
+    origin: "*",
     methods: ["GET", "POST"],
   },
 });
@@ -47,6 +47,12 @@ function handleDisconnect(socket) {
 
 io.on("connection", (socket) => {
   socket.on("camera:join", (role) => {
+    for (const [id, r] of peers) {
+      if (r === role && id !== socket.id) {
+        peers.delete(id);
+      }
+    }
+
     peers.set(socket.id, role);
     socket.join("camera-room");
 
@@ -55,6 +61,7 @@ io.on("connection", (socket) => {
 
     if (otherSocket) {
       io.to(otherSocket).emit("camera:peer-joined", role);
+      socket.emit("camera:peer-joined", targetRole);
     }
   });
 

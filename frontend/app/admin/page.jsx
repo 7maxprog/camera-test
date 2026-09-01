@@ -3,7 +3,14 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { io } from "socket.io-client";
 
-const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
+const ICE_SERVERS = [
+  {
+    urls: [
+      "stun:stun.l.google.com:19302",
+      "stun:stun1.l.google.com:19302",
+    ],
+  },
+];
 
 export default function AdminPage() {
   const [status, setStatus] = useState("waiting");
@@ -12,13 +19,14 @@ export default function AdminPage() {
   const remoteVideoRef = useRef(null);
   const socketRef = useRef(null);
   const peerConnectionRef = useRef(null);
+  const iceQueueRef = useRef([]);
 
-  const cleanup = useCallback(() => {
+  const cleanupPeer = useCallback(() => {
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close();
       peerConnectionRef.current = null;
     }
-
+    iceQueueRef.current = [];
     if (remoteVideoRef.current) {
       remoteVideoRef.current.srcObject = null;
     }
@@ -27,14 +35,15 @@ export default function AdminPage() {
   const handleOffer = useCallback(
     async (offer, socket) => {
       try {
-        cleanup();
+        cleanupPeer();
 
         const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
         peerConnectionRef.current = pc;
 
         pc.ontrack = (event) => {
-          if (remoteVideoRef.current && event.streams[0]) {
+          if (event.streams && event.streams[0] && remoteVideoRef.current) {
             remoteVideoRef.current.srcObject = event.streams[0];
+            remoteVideoRef.current.play().catch(() => {});
             setStatus("connected");
           }
         };
@@ -51,11 +60,17 @@ export default function AdminPage() {
             setStatus("connected");
           } else if (state === "disconnected" || state === "failed") {
             setStatus("waiting");
-            cleanup();
+            cleanupPeer();
           }
         };
 
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
+
+        while (iceQueueRef.current.length > 0) {
+          const candidate = iceQueueRef.current.shift();
+          await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+        }
+
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         socket.emit("camera:answer", answer);
@@ -64,17 +79,17 @@ export default function AdminPage() {
         setStatus("waiting");
       }
     },
-    [cleanup]
+    [cleanupPeer]
   );
 
   const disconnect = useCallback(() => {
     if (socketRef.current) {
       socketRef.current.emit("camera:disconnect");
     }
-    cleanup();
+    cleanupPeer();
     setStatus("waiting");
     setError(null);
-  }, [cleanup]);
+  }, [cleanupPeer]);
 
   useEffect(() => {
     const signalingUrl =
@@ -97,8 +112,10 @@ export default function AdminPage() {
     socket.on("camera:ice-candidate", async (candidate) => {
       try {
         const pc = peerConnectionRef.current;
-        if (pc && pc.remoteDescription) {
+        if (pc && pc.remoteDescription && pc.remoteDescription.type) {
           await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        } else {
+          iceQueueRef.current.push(candidate);
         }
       } catch {
         setError("Failed to add ICE candidate");
@@ -108,7 +125,7 @@ export default function AdminPage() {
     socket.on("camera:peer-disconnected", (role) => {
       if (role === "mobile") {
         setStatus("waiting");
-        cleanup();
+        cleanupPeer();
       }
     });
 
@@ -121,9 +138,9 @@ export default function AdminPage() {
         socketRef.current.emit("camera:disconnect");
         socketRef.current.disconnect();
       }
-      cleanup();
+      cleanupPeer();
     };
-  }, [handleOffer, cleanup]);
+  }, [handleOffer, cleanupPeer]);
 
   const isConnected = status === "connected";
 
@@ -148,23 +165,23 @@ export default function AdminPage() {
           {isConnected && (
             <button
               onClick={disconnect}
-              className="rounded-lg border border-zinc-800 px-4 py-2 text-sm font-medium text-zinc-300 transition-opacity hover:opacity-90"
+              className="rounded-lg border border-zinc-800 px-4 py-2 text-sm font-medium text-zinc-300 transition-opacity hover:opacity-90 cursor-pointer"
             >
               Disconnect
             </button>
           )}
         </div>
 
-        <div className="aspect-video w-full overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900">
-          {isConnected ? (
-            <video
-              ref={remoteVideoRef}
-              autoPlay
-              playsInline
-              className="h-full w-full object-cover"
-            />
-          ) : (
-            <div className="flex h-full items-center justify-center">
+        <div className="relative aspect-video w-full overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900">
+          <video
+            ref={remoteVideoRef}
+            autoPlay
+            playsInline
+            muted
+            className={`h-full w-full object-cover ${isConnected ? "block" : "hidden"}`}
+          />
+          {!isConnected && (
+            <div className="absolute inset-0 flex items-center justify-center">
               <p className="text-sm text-zinc-500">Waiting for mobile...</p>
             </div>
           )}
