@@ -8,21 +8,13 @@ import {
   Copy,
   Check,
   Trash2,
-  Maximize2,
-  Minimize2,
   ExternalLink,
   Radio,
-  Camera,
-  RotateCcw,
   Smartphone,
-  Layers,
   LayoutGrid,
   Grid3X3,
   Columns2,
-  Rows3,
   AlertCircle,
-  ShieldCheck,
-  X,
   Share2,
 } from "lucide-react";
 
@@ -43,9 +35,8 @@ function CameraFeedCard({
   socket,
   onDelete,
   onUpdateName,
-  onExpand,
 }) {
-  const { id: roomId, name, createdAt } = session;
+  const { id: roomId, name } = session;
 
   const [status, setStatus] = useState("waiting");
   const [error, setError] = useState(null);
@@ -89,15 +80,15 @@ function CameraFeedCard({
         peerConnectionRef.current = pc;
 
         pc.ontrack = (event) => {
-          if (event.streams && event.streams[0] && videoRef.current) {
-            videoRef.current.srcObject = event.streams[0];
-            videoRef.current.play().catch(() => {});
-            setStatus("connected");
-            setError(null);
-          } else if (event.track && videoRef.current) {
-            const stream = new MediaStream([event.track]);
-            videoRef.current.srcObject = stream;
-            videoRef.current.play().catch(() => {});
+          if (videoRef.current) {
+            if (event.streams && event.streams[0]) {
+              videoRef.current.srcObject = event.streams[0];
+            } else if (event.track) {
+              videoRef.current.srcObject = new MediaStream([event.track]);
+            }
+            videoRef.current.play().catch((err) => {
+              console.warn("Autoplay error:", err);
+            });
             setStatus("connected");
             setError(null);
           }
@@ -287,18 +278,20 @@ function CameraFeedCard({
         </div>
       </div>
 
-      {/* Video Stream Area */}
-      <div className="relative aspect-video w-full bg-zinc-950 flex items-center justify-center overflow-hidden group">
+      {/* Video Stream Area (Always in DOM to avoid autoplay blocking) */}
+      <div className="relative aspect-video w-full bg-zinc-950 flex items-center justify-center overflow-hidden">
         <video
           ref={videoRef}
           autoPlay
           playsInline
           muted
-          className={`w-full h-full object-cover ${isConnected ? "block" : "hidden"}`}
+          className={`w-full h-full object-cover absolute inset-0 transition-opacity duration-300 ${
+            isConnected ? "opacity-100" : "opacity-0 pointer-events-none"
+          }`}
         />
 
         {!isConnected && (
-          <div className="text-center p-6 space-y-2">
+          <div className="text-center p-6 space-y-2 z-0">
             <div className="h-12 w-12 mx-auto rounded-xl bg-zinc-900 border border-zinc-800 flex items-center justify-center text-zinc-600">
               <Smartphone className="h-6 w-6" />
             </div>
@@ -307,7 +300,7 @@ function CameraFeedCard({
                 {status === "connecting" ? "Establishing connection..." : "Waiting for phone..."}
               </p>
               <p className="text-[11px] text-zinc-600 mt-0.5">
-                Open the link below on a phone camera
+                Open the link on a phone and tap Start
               </p>
             </div>
           </div>
@@ -315,24 +308,11 @@ function CameraFeedCard({
 
         {/* Live Badge */}
         {isConnected && (
-          <div className="absolute top-2.5 left-2.5 flex items-center gap-1.5 px-2 py-0.5 rounded bg-black/60 backdrop-blur-md border border-red-500/40 text-[10px] font-bold text-red-400 uppercase tracking-wider">
+          <div className="absolute top-2.5 left-2.5 z-10 flex items-center gap-1.5 px-2 py-0.5 rounded bg-black/60 backdrop-blur-md border border-red-500/40 text-[10px] font-bold text-red-400 uppercase tracking-wider">
             <Radio className="h-3 w-3 animate-pulse" />
             LIVE
           </div>
         )}
-
-        {/* Overlay Action Buttons */}
-        <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-          {isConnected && (
-            <button
-              onClick={() => onExpand({ roomId, name, videoRef })}
-              className="p-1.5 rounded-md bg-black/60 hover:bg-black/80 backdrop-blur-md border border-white/10 text-zinc-200 transition-colors cursor-pointer"
-              title="Fullscreen / Expand"
-            >
-              <Maximize2 className="h-3.5 w-3.5" />
-            </button>
-          )}
-        </div>
       </div>
 
       {/* Error Message if any */}
@@ -385,8 +365,7 @@ function CameraFeedCard({
 export default function AdminDashboardPage() {
   const [sessions, setSessions] = useState([]);
   const [socket, setSocket] = useState(null);
-  const [columns, setColumns] = useState("auto"); // auto, 2, 3, 4
-  const [expandedFeed, setExpandedFeed] = useState(null);
+  const [columns, setColumns] = useState("2"); // Default to 2-columns (center of grid types)
   const [toastMessage, setToastMessage] = useState(null);
 
   // Load saved sessions from localStorage on mount
@@ -505,13 +484,11 @@ export default function AdminDashboardPage() {
     );
   };
 
-  // Layout grid classes based on column choice
+  // Layout grid classes based on column choice (2-column default is centered and balanced)
   const gridClasses = useMemo(() => {
-    if (columns === "2") return "grid-cols-1 md:grid-cols-2";
+    if (columns === "2") return "grid-cols-1 md:grid-cols-2 max-w-5xl mx-auto";
     if (columns === "3") return "grid-cols-1 md:grid-cols-2 lg:grid-cols-3";
-    if (columns === "4")
-      return "grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4";
-    // Auto responsive
+    // Auto grid
     return "grid-cols-1 md:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4";
   }, [columns]);
 
@@ -555,7 +532,7 @@ export default function AdminDashboardPage() {
                     ? "bg-zinc-800 text-white"
                     : "text-zinc-400 hover:text-zinc-200"
                 }`}
-                title="2 Columns"
+                title="2 Columns (Default)"
               >
                 <Columns2 className="h-4 w-4" />
               </button>
@@ -610,7 +587,7 @@ export default function AdminDashboardPage() {
             </button>
           </div>
         ) : (
-          <div className={`grid gap-5 ${gridClasses}`}>
+          <div className={`grid gap-6 ${gridClasses}`}>
             {sessions.map((session) => (
               <CameraFeedCard
                 key={session.id}
@@ -618,7 +595,6 @@ export default function AdminDashboardPage() {
                 socket={socket}
                 onDelete={handleDeleteSession}
                 onUpdateName={handleUpdateName}
-                onExpand={setExpandedFeed}
               />
             ))}
           </div>
@@ -630,43 +606,6 @@ export default function AdminDashboardPage() {
         <div className="fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-900 border border-zinc-700 text-zinc-100 text-xs font-medium shadow-2xl shadow-black/80 animate-in fade-in slide-in-from-bottom-2">
           <Check className="h-4 w-4 text-emerald-400" />
           <span>{toastMessage}</span>
-        </div>
-      )}
-
-      {/* Fullscreen Feed Modal Overlay */}
-      {expandedFeed && (
-        <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-xl flex flex-col p-4 sm:p-8">
-          <div className="flex items-center justify-between pb-4">
-            <div className="flex items-center gap-2">
-              <span className="h-3 w-3 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/50" />
-              <h2 className="text-lg font-bold text-white">
-                {expandedFeed.name}
-              </h2>
-              <span className="text-xs font-mono text-zinc-400 ml-2">
-                ID: {expandedFeed.roomId}
-              </span>
-            </div>
-            <button
-              onClick={() => setExpandedFeed(null)}
-              className="p-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors cursor-pointer"
-            >
-              <X className="h-5 w-5" />
-            </button>
-          </div>
-          <div className="flex-1 rounded-2xl overflow-hidden bg-black flex items-center justify-center border border-zinc-800">
-            <video
-              ref={(node) => {
-                if (node && expandedFeed.videoRef?.current?.srcObject) {
-                  node.srcObject = expandedFeed.videoRef.current.srcObject;
-                  node.play().catch(() => {});
-                }
-              }}
-              autoPlay
-              playsInline
-              muted
-              className="w-full h-full object-contain"
-            />
-          </div>
         </div>
       )}
     </div>
